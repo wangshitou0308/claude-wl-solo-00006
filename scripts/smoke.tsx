@@ -99,6 +99,9 @@ const checks = [
   '本期补收 6 m³',
   '正常新增',
   '应退减 18 m³',
+  '本账期分摊实际',
+  '重算应缴',
+  '62.10 元',
   'SM-2018-00431',
   'LXSY-2025-00782',
   '换表',
@@ -135,7 +138,18 @@ if (!html3.includes('水费账单核对沟通卡')) {
   console.error('❌ 打印卡未渲染')
   process.exit(1)
 }
-console.log('✓ 打印沟通卡渲染，只含争议账期')
+// 打印卡上应含完整重算算式与应退金额，而不是金额差额 0.00
+for (const t of ['拆表实读区间', '本账期分摊实际', '重算应缴', '应退金额', '62.10 元']) {
+  if (!html3.includes(t)) {
+    console.error('❌ 打印卡缺少退费算式：', t)
+    process.exit(1)
+  }
+}
+if (html3.includes('金额差额：') && html3.match(/2025-05-05[\s\S]{0,1200}金额差额：0\.00/)) {
+  console.error('❌ 退费账期仍显示金额差额 0.00')
+  process.exit(1)
+}
+console.log('✓ 打印沟通卡含换表退费完整算式与应退金额')
 
 // 打开历史面板
 const backBtn = Array.from(container.querySelectorAll('button')).find((b) => b.textContent?.includes('返回核对页'))!

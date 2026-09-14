@@ -139,8 +139,50 @@ export function computeAll(periodsIn: BillPeriod[], changesIn: MeterChange[]): C
       // 用拆表末读数给旧表上待核对的估读账期收口（结果挂到后面新表首期展示）
       if (oldMeter.openEstimates.length > 0 && oldMeter.actualAnchor !== null) {
         const estTotal = round2(oldMeter.openEstimates.reduce((s, e) => s + (e.endReading - e.startReading), 0))
-        const delta = round2(ch.oldLastReading - oldMeter.actualAnchor - estTotal)
+        const actualTotal = round2(ch.oldLastReading - oldMeter.actualAnchor)
+        const delta = round2(actualTotal - estTotal)
         const estDesc = oldMeter.openEstimates.map((e) => `止${e.endDate}`).join('、')
+
+        // 把拆表核实的实际水量按各估读账期的估读水量占比分摊，逐期用当时费率重算
+        let totalRefundAmount = 0
+        let refundComputable = true
+        let accActual = 0
+        for (let k = 0; k < oldMeter.openEstimates.length; k++) {
+          const est = oldMeter.openEstimates[k]
+          const ec = computations.get(est.id)
+          if (!ec) continue
+          const chargedVolume = round2(est.endReading - est.startReading)
+          // 最后一期兜底吃掉四舍五入误差，保证各期之和=actualTotal
+          const actualVolume =
+            k === oldMeter.openEstimates.length - 1
+              ? round2(actualTotal - accActual)
+              : round2((actualTotal * chargedVolume) / estTotal)
+          accActual = round2(accActual + actualVolume)
+          const deltaVolume = round2(actualVolume - chargedVolume)
+          const { lines: recomputedFeeLines, total: recomputedVariable } = calcTieredFees(actualVolume, est.tiers)
+          const recomputedAmount = est.tiers.length > 0 ? round2(recomputedVariable + est.fixedFee) : null
+          // 应退/应补 = 纸单已收 − 重算应收（固定费不退，固定在两边都计）
+          const refundAmount = recomputedAmount === null ? null : round2(est.billedAmount - recomputedAmount)
+          if (refundAmount === null) refundComputable = false
+          else totalRefundAmount = round2(totalRefundAmount + refundAmount)
+
+          ec.changeSettlement = {
+            changeDate: ch.date,
+            oldMeterNo: ch.oldMeterNo,
+            anchor: oldMeter.actualAnchor,
+            oldLastReading: ch.oldLastReading,
+            estTotal,
+            actualTotal,
+            chargedVolume,
+            actualVolume,
+            deltaVolume,
+            recomputedFeeLines,
+            recomputedAmount,
+            refundAmount,
+          }
+        }
+        const totalRefund = refundComputable ? totalRefundAmount : null
+
         if (Math.abs(delta) <= USAGE_TOLERANCE) {
           pushIssue(list, 'open_estimate', 'info', `旧表拆表核对：估读账期（${estDesc}）估收 ${estTotal} m³，与拆表末读数 ${ch.oldLastReading} 一致，不补不退。`)
         } else if (delta < 0) {
@@ -148,16 +190,20 @@ export function computeAll(periodsIn: BillPeriod[], changesIn: MeterChange[]): C
             list,
             'open_estimate',
             'error',
-            `旧表估多应退：估读账期（${estDesc}）共估收 ${estTotal} m³，基线 ${oldMeter.actualAnchor} 至拆表末读数 ${ch.oldLastReading} 实际只有 ${round2(
-              ch.oldLastReading - oldMeter.actualAnchor,
-            )} m³，应退减 ${Math.abs(delta)} m³。`,
+            `旧表估多应退：估读账期（${estDesc}）共估收 ${estTotal} m³；上一实抄基线 ${oldMeter.actualAnchor} 至拆表末读数 ${ch.oldLastReading} 实际只有 ${actualTotal} m³，应退减 ${Math.abs(
+              delta,
+            )} m³。` +
+              (totalRefund !== null
+                ? `按各估读账期当时费率重算，合计应退 ${totalRefund.toFixed(2)} 元（只退水量费，固定费不退）。`
+                : '（有关账期未填费率，金额需按供水公司单价另行核算。）'),
           )
         } else {
           pushIssue(
             list,
             'open_estimate',
             'info',
-            `旧表估少补收：估读账期（${estDesc}）共估收 ${estTotal} m³，拆表实际多用 ${delta} m³，应补收。`,
+            `旧表估少补收：估读账期（${estDesc}）共估收 ${estTotal} m³；上一实抄基线 ${oldMeter.actualAnchor} 至拆表末读数 ${ch.oldLastReading} 实际为 ${actualTotal} m³，应补收 ${delta} m³。` +
+              (totalRefund !== null ? `按各估读账期当时费率重算，合计应补 ${Math.abs(totalRefund).toFixed(2)} 元。` : ''),
           )
         }
         // 记下结算结果，稍后挂到新表首期
@@ -167,8 +213,10 @@ export function computeAll(periodsIn: BillPeriod[], changesIn: MeterChange[]): C
           anchor: oldMeter.actualAnchor,
           oldLastReading: ch.oldLastReading,
           estTotal,
+          actualTotal,
           delta,
           estimateEndDates: oldMeter.openEstimates.map((e) => e.endDate),
+          totalRefundAmount: totalRefund,
         })
         // 旧表上的估读账期此刻已被拆表读数核对，更新其结论与告警
         for (const est of oldMeter.openEstimates) {
@@ -176,16 +224,33 @@ export function computeAll(periodsIn: BillPeriod[], changesIn: MeterChange[]): C
           if (ec) {
             ec.verdict = 'estimated_cleared_by_change'
             ec.issues = ec.issues.filter((i) => i.code !== 'open_estimate')
-            ec.issues.push({
-              code: 'open_estimate',
-              level: delta < 0 ? 'error' : 'info',
-              text:
-                Math.abs(delta) <= USAGE_TOLERANCE
-                  ? `换表拆表核对：估读 ${round2(est.endReading - est.startReading)} m³ 与拆表末读数 ${ch.oldLastReading} 吻合，不补不退。`
-                  : delta < 0
-                    ? `换表拆表核对：本估读账期与其他估读合计估收 ${estTotal} m³，拆表实际区间仅 ${round2(ch.oldLastReading - oldMeter.actualAnchor!)} m³，应退减 ${Math.abs(delta)} m³（详见换表记录）。`
-                    : `换表拆表核对：估读合计 ${estTotal} m³，实际区间 ${round2(ch.oldLastReading - oldMeter.actualAnchor!)} m³，应补收 ${delta} m³（详见换表记录）。`,
-            })
+            const s = ec.changeSettlement
+            if (!s) continue
+            if (Math.abs(s.deltaVolume) <= USAGE_TOLERANCE) {
+              ec.issues.push({
+                code: 'open_estimate',
+                level: 'info',
+                text: `换表拆表核对：本账期估读 ${s.chargedVolume} m³ 与分摊实际 ${s.actualVolume} m³ 一致，不补不退。`,
+              })
+            } else if (s.deltaVolume < 0) {
+              ec.issues.push({
+                code: 'open_estimate',
+                level: 'error',
+                text:
+                  `换表拆表核对：拆表实读区间 ${s.actualTotal} m³，本账期估读 ${s.chargedVolume} m³ 占估读合计 ${s.estTotal} m³ 的 ${Math.round(
+                    (s.chargedVolume / s.estTotal) * 100,
+                  )}%，分摊实际 ${s.actualVolume} m³，应退减 ${Math.abs(s.deltaVolume)} m³。` +
+                  (s.refundAmount !== null ? `已收 ${est.billedAmount.toFixed(2)} 元，按实际重算应收 ${s.recomputedAmount!.toFixed(2)} 元，应退 ${s.refundAmount.toFixed(2)} 元。` : ''),
+              })
+            } else {
+              ec.issues.push({
+                code: 'open_estimate',
+                level: 'info',
+                text:
+                  `换表拆表核对：本账期分摊实际 ${s.actualVolume} m³，比估读 ${s.chargedVolume} m³ 多 ${s.deltaVolume} m³，应补收。` +
+                  (s.refundAmount !== null ? `按当时费率重算应补 ${Math.abs(s.refundAmount).toFixed(2)} 元。` : ''),
+              })
+            }
           }
         }
         oldMeter.openEstimates = []
@@ -391,6 +456,7 @@ export function computeAll(periodsIn: BillPeriod[], changesIn: MeterChange[]): C
       prevOnMeterId: prevOnMeter?.id ?? null,
       linkedToMeterChange,
       oldMeterSettlement,
+      changeSettlement: null,
       readingStartExpected,
       readingStartDelta,
       grossUsage,
@@ -420,7 +486,11 @@ export function computeAll(periodsIn: BillPeriod[], changesIn: MeterChange[]): C
     }
   }
 
-  const meterChangeComputations = changes.map((change) => ({ change, issues: changeIssues.get(change.id) ?? [] }))
+  const meterChangeComputations = changes.map((change) => ({
+    change,
+    issues: changeIssues.get(change.id) ?? [],
+    refundTotal: pendingSettlements.get(change.id)?.totalRefundAmount ?? null,
+  }))
 
   const ordered = periods.map((p) => computations.get(p.id)!)
   const disputedPeriods = ordered.filter((c) => c.period.disputed || c.issues.some((i) => i.level === 'error'))

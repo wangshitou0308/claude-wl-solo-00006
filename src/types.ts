@@ -145,8 +145,39 @@ export interface PeriodComputation {
     anchor: number
     oldLastReading: number
     estTotal: number
+    /** 拆表实读区间总水量 */
+    actualTotal: number
     delta: number
     estimateEndDates: string[]
+    /** 合计应退（正）/应补（负）金额；无费率算不出时为 null */
+    totalRefundAmount: number | null
+  } | null
+  /**
+   * 若本账期是被换表拆表读数核对的估读账期，这里给出该期的收口重算：
+   * 按拆表实际水量重算应收，与已收金额对比得出应退/应补。
+   */
+  changeSettlement: {
+    changeDate: string
+    oldMeterNo: string
+    /** 上一实抄基线 */
+    anchor: number
+    oldLastReading: number
+    /** 收口区间内全部估读账期合计估收水量 */
+    estTotal: number
+    /** 收口区间实际水量 */
+    actualTotal: number
+    /** 本账期估收（已收费）水量 */
+    chargedVolume: number
+    /** 分摊到本账期的实际水量 */
+    actualVolume: number
+    /** 本账期水量差额（负=估多应退） */
+    deltaVolume: number
+    /** 按实际水量重算的逐行算式 */
+    recomputedFeeLines: FeeLine[]
+    /** 按实际水量重算的应缴金额（含固定费） */
+    recomputedAmount: number | null
+    /** 纸单已收 − 重算应收：正=应退，负=应补 */
+    refundAmount: number | null
   } | null
   /** 表具累计用量（起读数是否与上一期止读数/换表末读数衔接） */
   readingStartExpected: number | null
@@ -182,6 +213,8 @@ export interface PeriodComputation {
 export interface MeterChangeComputation {
   change: MeterChange
   issues: Issue[]
+  /** 旧表待核对估读按拆表读数重算后，合计应退（正）/应补（负）金额；无需结算或无费率时为 null */
+  refundTotal: number | null
 }
 
 export interface ComputationResult {

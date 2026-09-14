@@ -27,6 +27,17 @@ export function MeterChangeBand({
         新表 {change.newMeterNo}（初读数 {change.newStartReading}）
       </div>
       {change.note && <div className="photo-hint" style={{ marginTop: 4 }}>备注：{change.note}</div>}
+      {issues.some((i) => i.code === 'open_estimate') && (() => {
+        // 从关联的旧估读账期 changeSettlement 汇总应退金额
+        const refund = comp.refundTotal
+        if (refund === null) return null
+        return (
+          <div className="formula-line" style={{ marginTop: 8, fontWeight: 700, color: Math.abs(refund) > 0.02 ? 'var(--red)' : 'var(--green)' }}>
+            {refund >= 0 ? `合计应退 ${refund.toFixed(2)} 元` : `合计应补 ${Math.abs(refund).toFixed(2)} 元`}
+            <span className="photo-hint" style={{ fontWeight: 400 }}>（按各估读账期当时费率、以拆表实读水量重算，只退水量费）</span>
+          </div>
+        )
+      })()}
       {issues.length > 0 && (
         <ul className="issues">
           {issues.map((i, idx) => (

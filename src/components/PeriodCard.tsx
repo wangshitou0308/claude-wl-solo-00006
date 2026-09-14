@@ -106,10 +106,49 @@ export function PeriodCard({ comp, onEdit }: { comp: PeriodComputation; onEdit: 
               估读预收 {comp.grossUsage} m³（基线 {comp.chargedBefore}），待后续实抄核对
             </div>
           )}
-          {period.kind === 'estimate' && comp.verdict === 'estimated_cleared_by_change' && (
-            <div className="formula-line">
-              本估读账期已由换表拆表末读数核对，结论见下方提示与换表记录。
-            </div>
+          {period.kind === 'estimate' && comp.verdict === 'estimated_cleared_by_change' && comp.changeSettlement && (
+            <>
+              <div className="formula-line">本估读账期已由 {comp.changeSettlement.changeDate} 换表拆表末读数核对，按实际水量重算如下：</div>
+              <div className="formula-line">
+                拆表实读区间 = 拆表末读数 {comp.changeSettlement.oldLastReading} − 上一实抄基线 {comp.changeSettlement.anchor} ={' '}
+                <strong>{comp.changeSettlement.actualTotal} m³</strong>
+              </div>
+              <div className="formula-line">
+                本账期分摊实际 = 实读区间 {comp.changeSettlement.actualTotal} ×（本账期估读 {comp.changeSettlement.chargedVolume} ÷ 估读合计{' '}
+                {comp.changeSettlement.estTotal}）= <strong>{comp.changeSettlement.actualVolume} m³</strong>
+              </div>
+              <div className="formula-line">
+                水量差额 = 分摊实际 {comp.changeSettlement.actualVolume} − 已估收 {comp.changeSettlement.chargedVolume} ={' '}
+                <span className={comp.changeSettlement.deltaVolume < 0 ? 'minus' : 'plus'}>
+                  {comp.changeSettlement.deltaVolume > 0 ? '+' : ''}
+                  {comp.changeSettlement.deltaVolume} m³
+                </span>
+              </div>
+              {comp.changeSettlement.recomputedFeeLines.map((l, i) => (
+                <div className="formula-line" key={i}>
+                  按实际重算 · {l.label}：{l.volume} m³ × {l.price.toFixed(2)} = {l.amount.toFixed(2)} 元
+                </div>
+              ))}
+              {comp.changeSettlement.recomputedAmount !== null && comp.changeSettlement.refundAmount !== null && (
+                <>
+                  <div className="formula-line">
+                    重算应缴 = 重算水量费 {comp.changeSettlement.recomputedFeeLines.reduce((s, l) => s + l.amount, 0).toFixed(2)} 元 ＋ 固定费用{' '}
+                    {period.fixedFee.toFixed(2)} 元 = <strong>{comp.changeSettlement.recomputedAmount.toFixed(2)} 元</strong>
+                  </div>
+                  <div className="formula-line">
+                    {comp.changeSettlement.refundAmount >= 0 ? '应退' : '应补'} = 纸单已收 {period.billedAmount.toFixed(2)} − 重算应缴{' '}
+                    {comp.changeSettlement.recomputedAmount.toFixed(2)} ={' '}
+                    <span className={comp.changeSettlement.refundAmount >= 0 ? 'minus' : 'plus'}>
+                      <strong>{Math.abs(comp.changeSettlement.refundAmount).toFixed(2)} 元</strong>
+                    </span>
+                    <span className="photo-hint">（固定费用两期都计、不退）</span>
+                  </div>
+                </>
+              )}
+            </>
+          )}
+          {period.kind === 'estimate' && comp.verdict === 'estimated_cleared_by_change' && !comp.changeSettlement && (
+            <div className="formula-line">本估读账期已由换表拆表末读数核对，结论见下方提示与换表记录。</div>
           )}
 
           {period.kind === 'actual' && comp.verdict === 'normal' && (
@@ -142,12 +181,21 @@ export function PeriodCard({ comp, onEdit }: { comp: PeriodComputation; onEdit: 
             <div className="formula-line" style={{ marginTop: 8 }}>
               旧表「{comp.oldMeterSettlement.oldMeterNo}」于 {comp.oldMeterSettlement.changeDate} 拆下：基线{' '}
               {comp.oldMeterSettlement.anchor} → 拆表末读数 {comp.oldMeterSettlement.oldLastReading}，区间实用{' '}
-              {Math.round((comp.oldMeterSettlement.oldLastReading - comp.oldMeterSettlement.anchor) * 100) / 100} m³，
-              此前估收 {comp.oldMeterSettlement.estTotal} m³，差额{' '}
+              {comp.oldMeterSettlement.actualTotal} m³，此前估收 {comp.oldMeterSettlement.estTotal} m³，水量差额{' '}
               <span className={comp.oldMeterSettlement.delta < 0 ? 'minus' : 'plus'}>
                 {comp.oldMeterSettlement.delta > 0 ? '+' : ''}
                 {comp.oldMeterSettlement.delta} m³
               </span>
+              {comp.oldMeterSettlement.totalRefundAmount !== null && (
+                <span>
+                  ；按各估读账期当时费率重算，合计
+                  <strong className={comp.oldMeterSettlement.totalRefundAmount >= 0 ? 'minus' : 'plus'}>
+                    {comp.oldMeterSettlement.totalRefundAmount >= 0 ? '应退 ' : '应补 '}
+                    {Math.abs(comp.oldMeterSettlement.totalRefundAmount).toFixed(2)} 元
+                  </strong>
+                  （明细见旧表各估读账期）
+                </span>
+              )}
             </div>
           )}
 
@@ -169,20 +217,35 @@ export function PeriodCard({ comp, onEdit }: { comp: PeriodComputation; onEdit: 
 
           <div className="amount-row">
             <div>
+              纸单已收{' '}
               <span className="big" style={{ color: Math.abs(comp.amountDelta) > 0.02 ? 'var(--red)' : 'var(--green)' }}>
-                纸单 {period.billedAmount.toFixed(2)} 元
+                {period.billedAmount.toFixed(2)} 元
               </span>
             </div>
             <div>
-              核算 <span className="big">{comp.computedAmount.toFixed(2)} 元</span>
+              按本账期{comp.changeSettlement ? '估读读数' : '读数'}核算 <span className="big">{comp.computedAmount.toFixed(2)} 元</span>
+              {comp.changeSettlement && (
+                <span className="photo-hint" style={{ display: 'block' }}>
+                  原账单与估读水量本身吻合；按换表拆表实际水量重算应收 {comp.changeSettlement.recomputedAmount?.toFixed(2) ?? '—'} 元
+                </span>
+              )}
             </div>
-            <div>
-              差额{' '}
-              <span className="big" style={{ color: Math.abs(comp.amountDelta) > 0.02 ? 'var(--red)' : 'var(--green)' }}>
-                {comp.amountDelta > 0 ? '+' : ''}
-                {comp.amountDelta.toFixed(2)} 元
-              </span>
-            </div>
+            {comp.changeSettlement && comp.changeSettlement.refundAmount !== null ? (
+              <div>
+                {comp.changeSettlement.refundAmount >= 0 ? '应退' : '应补'}{' '}
+                <span className="big" style={{ color: 'var(--red)' }}>
+                  {Math.abs(comp.changeSettlement.refundAmount).toFixed(2)} 元
+                </span>
+              </div>
+            ) : (
+              <div>
+                本账期差额{' '}
+                <span className="big" style={{ color: Math.abs(comp.amountDelta) > 0.02 ? 'var(--red)' : 'var(--green)' }}>
+                  {comp.amountDelta > 0 ? '+' : ''}
+                  {comp.amountDelta.toFixed(2)} 元
+                </span>
+              </div>
+            )}
           </div>
         </div>
 
